@@ -1,6 +1,6 @@
 // 앱 파일을 폰에 캐시해서 오프라인에서도 열리게 한다. API 호출은 건드리지 않는다.
-const CACHE = "rotwald-v2";
-const FILES = ["./", "index.html", "style.css", "data.js", "engine.js", "app.js", "manifest.webmanifest", "icon-192.png", "icon-512.png"];
+const CACHE = "rotwald-v3";
+const FILES = ["./", "index.html", "style.css", "data.js", "engine.js", "world.js", "app.js", "manifest.webmanifest", "icon-192.png", "icon-512.png"];
 
 self.addEventListener("install", (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(FILES)).then(() => self.skipWaiting()));

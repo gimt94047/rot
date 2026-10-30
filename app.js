@@ -126,8 +126,9 @@ function drawLand(g, f) {
   for (let k = -H; k < W; k += 9) { g.moveTo(k, 0); g.lineTo(k + H, H); }
   g.stroke();
   const ownerOf = (i) => (grid[i] < 0 ? null : owners[grid[i]]);
+  const reg = MAP.region, lw = 1 / Math.sqrt(view.z);
   const seg = (style, width, test) => {
-    g.beginPath(); g.strokeStyle = style; g.lineWidth = width; g.lineCap = "square";
+    g.beginPath(); g.strokeStyle = style; g.lineWidth = width * lw; g.lineCap = "square";
     for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
       const i = y * w + x;
       if (x + 1 < w && test(i, i + 1)) { g.moveTo((x + 1) * CELL, y * CELL); g.lineTo((x + 1) * CELL, (y + 1) * CELL); }
@@ -135,20 +136,45 @@ function drawLand(g, f) {
     }
     g.stroke();
   };
-  seg("rgba(30,22,14,0.35)", 1, (a, b) => grid[a] >= 0 && grid[b] >= 0 && grid[a] !== grid[b] && ownerOf(a) === ownerOf(b));
-  seg("rgba(24,16,10,0.9)", 2.4, (a, b) => grid[a] >= 0 && grid[b] >= 0 && ownerOf(a) !== ownerOf(b));
+  const land = (a, b) => grid[a] >= 0 && grid[b] >= 0;
+  seg("rgba(30,22,14,0.22)", 0.8, (a, b) => land(a, b) && grid[a] !== grid[b] && reg[a] === reg[b] && ownerOf(a) === ownerOf(b));
+  seg("rgba(30,22,14,0.6)", 1.5, (a, b) => land(a, b) && reg[a] !== reg[b] && ownerOf(a) === ownerOf(b));
+  seg("rgba(24,16,10,0.92)", 2.6, (a, b) => land(a, b) && ownerOf(a) !== ownerOf(b));
   seg("rgba(12,10,8,0.95)", 3, (a, b) => (grid[a] < 0) !== (grid[b] < 0));
   g.restore();
 }
 
+/* 확대·이동 */
+const view = { z: 1, px: 0, py: 0 };
 function fit() {
   const c = $("#map"), wrap = $("#mapwrap");
   const dpr = window.devicePixelRatio || 1, W = wrap.clientWidth, H = wrap.clientHeight;
-  if (c.width !== W * dpr || c.height !== H * dpr) { c.width = W * dpr; c.height = H * dpr; }
-  const s = Math.min(W / (MAP.w * CELL), H / (MAP.h * CELL)) * 0.97;
-  return { dpr, W, H, s, ox: (W - MAP.w * CELL * s) / 2, oy: (H - MAP.h * CELL * s) / 2 };
+  if (c.width !== Math.round(W * dpr) || c.height !== Math.round(H * dpr)) { c.width = Math.round(W * dpr); c.height = Math.round(H * dpr); }
+  const s0 = Math.min(W / (MAP.w * CELL), H / (MAP.h * CELL)) * 0.97, s = s0 * view.z;
+  const mw = MAP.w * CELL * s, mh = MAP.h * CELL * s;
+  // 지도가 화면 밖으로 다 나가지 않게
+  const limX = Math.max(0, (mw - W) / 2 + 40), limY = Math.max(0, (mh - H) / 2 + 40);
+  view.px = clamp(view.px, -limX, limX); view.py = clamp(view.py, -limY, limY);
+  return { dpr, W, H, s, ox: (W - mw) / 2 + view.px, oy: (H - mh) / 2 + view.py };
+}
+function zoomAt(nz, cx, cy) {
+  const f = fit();
+  const mx = (cx - f.ox) / f.s, my = (cy - f.oy) / f.s; // 손가락 아래의 지도 좌표
+  view.z = clamp(nz, 1, 6);
+  const f2 = fit();
+  view.px += cx - (f2.ox + mx * f2.s); view.py += cy - (f2.oy + my * f2.s);
+  $("#map").style.touchAction = view.z > 1.01 ? "none" : "pan-y";
+  requestRender();
 }
 
+const TIER_STYLE = {
+  metropolis: { r: 6.5, show: 0, font: 1.12, weight: 700 },
+  city: { r: 5, show: 0, font: 0.98, weight: 700 },
+  town: { r: 3.6, show: 1.5, font: 0.86, weight: 400 },
+  village: { r: 2.4, show: 2.4, font: 0.78, weight: 400 },
+};
+let rafPending = false;
+function requestRender() { if (rafPending) return; rafPending = true; requestAnimationFrame(() => { rafPending = false; renderMap(); }); }
 function renderMap() {
   if (!MAP || !S) return;
   const c = $("#map"), g = c.getContext("2d"), f = fit();
@@ -158,7 +184,7 @@ function renderMap() {
   const P = (x, y) => [f.ox + (x + 0.5) * CELL * f.s, f.oy + (y + 0.5) * CELL * f.s];
 
   // 선택한 영지 테두리
-  if (sel.prov) {
+  if (sel.prov && S.provinces[sel.prov]) {
     const idx = S.provinces[sel.prov].idx, { w, h, grid } = MAP, k = CELL * f.s;
     g.beginPath(); g.strokeStyle = "#e9c46a"; g.lineWidth = 2.5;
     for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
@@ -171,21 +197,63 @@ function renderMap() {
     }
     g.stroke();
   }
-  // 이름
-  const fs = Math.max(11, Math.min(17, 15 * f.s * CELL / 8));
+  const fs = Math.max(10, Math.min(15, 13 * Math.sqrt(f.s * CELL / 8))) * Math.min(1.35, Math.sqrt(view.z));
+  const boxes = [];
+  const free = (b) => !boxes.some((o) => b.x < o.x + o.w && b.x + b.w > o.x && b.y < o.y + o.h && b.y + b.h > o.y);
+  const label = (text, x, y, size, { weight = 400, color = "#f3ead6", alpha = 1, spacing = 0, force = false } = {}) => {
+    g.font = `${weight} ${size}px "Song Myung", "Nanum Myeongjo", serif`;
+    g.letterSpacing = spacing + "px";
+    const tw = g.measureText(text).width, b = { x: x - tw / 2 - 2, y: y - size / 2 - 1, w: tw + 4, h: size + 2 };
+    if (!force && !free(b)) { g.letterSpacing = "0px"; return false; }
+    boxes.push(b);
+    g.globalAlpha = alpha; g.lineWidth = 3.2; g.strokeStyle = "rgba(20,14,8,0.85)"; g.strokeText(text, x, y);
+    g.fillStyle = color; g.fillText(text, x, y); g.globalAlpha = 1; g.letterSpacing = "0px";
+    return true;
+  };
   g.textAlign = "center"; g.textBaseline = "middle";
-  for (const p of Object.values(S.provinces)) {
-    const [x, y] = P(p.cx, p.cy);
-    if (p.capital) drawCrown(g, x, y - fs * 1.15, fs * 0.8);
-    g.font = `${p.capital ? fs + 2 : fs}px "Song Myung", serif`;
-    g.lineWidth = 3.5; g.strokeStyle = "rgba(20,14,8,0.85)"; g.strokeText(p.name, x, y);
-    g.fillStyle = "#f3ead6"; g.fillText(p.name, x, y);
+
+  // 폐허
+  if (view.z >= 1.5) for (const r of S.ruins || []) {
+    const [x, y] = P(r.x, r.y), k = 3;
+    g.strokeStyle = "rgba(20,14,8,0.6)"; g.lineWidth = 1.5;
+    g.beginPath(); g.moveTo(x - k, y - k); g.lineTo(x + k, y + k); g.moveTo(x + k, y - k); g.lineTo(x - k, y + k); g.stroke();
   }
+  // 정착지 표시
+  const setts = Object.values(S.settlements).sort((a, b) => b.pop - a.pop);
+  const capitalSett = setts.find((s) => S.provinces[s.county]?.capital);
+  const mk = Math.min(1.6, Math.sqrt(view.z));
+  for (const s of setts) {
+    const t = tierOf(s.pop).key, st = TIER_STYLE[t], [x, y] = P(s.x, s.y), r = st.r * mk;
+    g.lineWidth = 1.4; g.strokeStyle = "rgba(20,14,8,0.95)";
+    if (t === "village") { g.fillStyle = "#efe6cf"; g.beginPath(); g.arc(x, y, r, 0, Math.PI * 2); g.fill(); g.stroke(); }
+    else if (t === "town") { g.fillStyle = "#efe6cf"; g.fillRect(x - r, y - r, r * 2, r * 2); g.strokeRect(x - r, y - r, r * 2, r * 2); }
+    else if (t === "city") {
+      g.fillStyle = "#efe6cf"; g.fillRect(x - r, y - r, r * 2, r * 2); g.strokeRect(x - r, y - r, r * 2, r * 2);
+      g.fillStyle = "#2a2119"; g.fillRect(x - r * 0.35, y - r * 0.35, r * 0.7, r * 0.7);
+    } else {
+      g.fillStyle = "#d8b25c"; g.beginPath(); g.arc(x, y, r, 0, Math.PI * 2); g.fill(); g.stroke();
+      g.beginPath(); g.arc(x, y, r * 0.45, 0, Math.PI * 2); g.fillStyle = "#2a2119"; g.fill();
+    }
+    if (t === "city" || t === "metropolis" || view.z >= 2.4) boxes.push({ x: x - r, y: y - r, w: r * 2, h: r * 2 });
+  }
+  if (capitalSett) { const [x, y] = P(capitalSett.x, capitalSett.y); drawCrown(g, x, y - 13 * mk, 10 * mk); boxes.push({ x: x - 7 * mk, y: y - 18 * mk, w: 14 * mk, h: 10 * mk }); }
+  // 이름: 큰 도시 → 주 이름 → 소도시 → 마을 순으로, 겹치면 뺀다
+  const nameOf = (s) => {
+    const t = tierOf(s.pop).key, st = TIER_STYLE[t], [x, y] = P(s.x, s.y);
+    if (view.z < st.show) return;
+    label(s.name, x, y + st.r * mk + fs * st.font * 0.75, fs * st.font, { weight: st.weight });
+  };
+  setts.filter((s) => s.pop >= 5000).forEach(nameOf);
+  for (const r of Object.values(MAP.regions)) {
+    const [x, y] = P(r.cx, r.cy);
+    label(r.name, x, y, fs * 1.08, { color: "#f5e7c0", alpha: view.z > 2.2 ? 0.45 : 0.72, spacing: 2 });
+  }
+  setts.filter((s) => s.pop < 5000).forEach(nameOf);
   // 전쟁 표시
   for (const w of S.wars) {
-    const p = S.provinces[w.province]; const [x, y] = P(p.cx, p.cy), r = fs * 0.7;
-    g.font = `${p.capital ? fs + 2 : fs}px "Song Myung", serif`;
-    drawSeal(g, x + g.measureText(p.name).width / 2 + r + 4, y, r);
+    const p = S.provinces[w.province]; if (!p) continue;
+    const [x, y] = P(p.cx, p.cy);
+    drawSeal(g, x, y, fs * 0.75);
   }
   renderLegend();
 }
@@ -210,37 +278,79 @@ function renderLegend() {
   const html = owners.map((o) => `<span><i style="background:${S.chars[o].color}"></i>${esc(S.chars[o].name)}</span>`).join("");
   if ($("#legend").innerHTML !== html) $("#legend").innerHTML = html;
 }
-function cellAt(ev) {
-  const f = fit(), r = $("#map").getBoundingClientRect();
-  const x = Math.floor((ev.clientX - r.left - f.ox) / (CELL * f.s)), y = Math.floor((ev.clientY - r.top - f.oy) / (CELL * f.s));
+function cellAtXY(cx, cy) {
+  const f = fit();
+  const x = Math.floor((cx - f.ox) / (CELL * f.s)), y = Math.floor((cy - f.oy) / (CELL * f.s));
   if (x < 0 || y < 0 || x >= MAP.w || y >= MAP.h) return null;
   const idx = MAP.grid[y * MAP.w + x];
   return idx < 0 ? null : MAP.order[idx];
 }
-function onMove(ev) {
-  if (!S) return;
-  const id = cellAt(ev), tip = $("#tip");
+const local = (ev) => { const r = $("#map").getBoundingClientRect(); return [ev.clientX - r.left, ev.clientY - r.top]; };
+function showTip(ev) {
+  const [lx, ly] = local(ev), id = cellAtXY(lx, ly), tip = $("#tip");
   if (!id) { tip.hidden = true; return; }
-  const p = S.provinces[id], r = $("#mapwrap").getBoundingClientRect();
-  tip.innerHTML = `<b>${esc(p.name)}</b><br>${esc(nm(p.owner))}<br>개발도 ${p.dev}, ${esc(p.terrain)}`;
+  const p = S.provinces[id], st = settlementsIn(id);
+  tip.innerHTML = `<b>${esc(p.name)}</b> <span style="color:var(--muted)">${esc(MAP.regions[p.region].name)}주</span><br>${esc(nm(p.owner))}<br>${st.length ? st.map((s) => `${esc(s.name)} ${tierOf(s.pop).name}`).join(", ") : "정착지 없음"}`;
   tip.hidden = false;
-  tip.style.left = Math.min(ev.clientX - r.left + 14, r.width - 180) + "px";
-  tip.style.top = ev.clientY - r.top + 14 + "px";
+  tip.style.left = Math.min(lx + 14, $("#mapwrap").clientWidth - 200) + "px";
+  tip.style.top = ly + 14 + "px";
 }
-function onClick(ev) {
-  const id = cellAt(ev);
+function select(lx, ly) {
+  const id = cellAtXY(lx, ly);
   sel.prov = id; renderMap();
   if (id) renderPcard(); else $("#pcard").hidden = true;
 }
+const settlementsIn = (pid) => Object.values(S.settlements).filter((s) => s.county === pid).sort((a, b) => b.pop - a.pop);
+
+/* 손가락: 한 손가락 탭 = 선택, 끌기 = 이동(확대했을 때), 두 손가락 = 확대 */
+const ptrs = new Map();
+let gesture = null;
+function onDown(ev) {
+  ptrs.set(ev.pointerId, local(ev));
+  $("#map").setPointerCapture?.(ev.pointerId);
+  if (ptrs.size === 1) { const [x, y] = local(ev); gesture = { type: "tap", x0: x, y0: y, px: view.px, py: view.py }; }
+  if (ptrs.size === 2) {
+    const [a, b] = [...ptrs.values()];
+    gesture = { type: "pinch", d0: Math.hypot(a[0] - b[0], a[1] - b[1]), z0: view.z, c0: [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2] };
+  }
+}
+function onPMove(ev) {
+  if (ev.pointerType === "mouse" && !ptrs.size) return showTip(ev);
+  if (!ptrs.has(ev.pointerId)) return;
+  ptrs.set(ev.pointerId, local(ev));
+  if (!gesture) return;
+  if (gesture.type === "pinch" && ptrs.size >= 2) {
+    const [a, b] = [...ptrs.values()], d = Math.hypot(a[0] - b[0], a[1] - b[1]), c = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+    zoomAt(gesture.z0 * d / gesture.d0, c[0], c[1]);
+    gesture.z0 = view.z; gesture.d0 = d;
+    view.px += c[0] - gesture.c0[0]; view.py += c[1] - gesture.c0[1]; gesture.c0 = c;
+    requestRender();
+  } else if (gesture.type === "tap" || gesture.type === "drag") {
+    const [x, y] = local(ev), dx = x - gesture.x0, dy = y - gesture.y0;
+    if (gesture.type === "tap" && Math.hypot(dx, dy) > 6) gesture.type = "drag";
+    if (gesture.type === "drag" && view.z > 1.01) { view.px = gesture.px + dx; view.py = gesture.py + dy; $("#tip").hidden = true; requestRender(); }
+  }
+}
+function onUp(ev) {
+  const had = ptrs.has(ev.pointerId);
+  ptrs.delete(ev.pointerId);
+  if (had && gesture?.type === "tap" && !ptrs.size && ev.type === "pointerup") select(gesture.x0, gesture.y0);
+  if (!ptrs.size) gesture = null;
+  else if (gesture?.type === "pinch") gesture = { type: "none" };
+}
 function renderPcard() {
   const p = S.provinces[sel.prov], card = $("#pcard");
-  const war = S.wars.find((w) => w.province === p.id);
+  if (!p) { card.hidden = true; return; }
+  const war = S.wars.find((w) => w.province === p.id), st = settlementsIn(p.id);
+  const pop = st.reduce((a, s) => a + s.pop, 0);
   card.innerHTML = `<button class="x" aria-label="닫기">×</button>
     <h3>${esc(p.name)}</h3>
+    <div class="region">${esc(MAP.regions[p.region].name)}주${p.capital ? ", 왕도" : p.seat ? ", 주도" : ""}</div>
     <dl><dt>영주</dt><dd>${p.owner ? `<button class="linkish" data-person="${p.owner}">${esc(nm(p.owner))}</button>` : "공석"}</dd>
-    <dt>개발도</dt><dd>${p.dev}</dd><dt>지형</dt><dd>${esc(p.terrain)}${p.capital ? ", 왕도" : ""}</dd>
-    <dt>이웃</dt><dd>${p.adj.map(pname).map(esc).join(", ")}</dd>
-    ${war ? `<dt>전쟁</dt><dd>${esc(nm(war.attacker))}의 침공 (전황 ${war.score > 0 ? "+" : ""}${war.score})</dd>` : ""}</dl>`;
+    <dt>개발도</dt><dd>${p.dev}, ${esc(p.terrain)}</dd>
+    <dt>인구</dt><dd>${pop.toLocaleString()}명</dd>
+    ${war ? `<dt>전쟁</dt><dd>${esc(nm(war.attacker))}의 침공 (전황 ${war.score > 0 ? "+" : ""}${war.score})</dd>` : ""}</dl>
+    <ul class="setts">${st.map((s) => `<li><span>${esc(s.name)}</span><span>${tierOf(s.pop).name}</span><span>${s.pop.toLocaleString()}</span></li>`).join("") || "<li>정착지 없음</li>"}</ul>`;
   card.hidden = false;
   $(".x", card).onclick = () => { sel.prov = null; card.hidden = true; renderMap(); };
   $$("[data-person]", card).forEach((b) => (b.onclick = () => openPerson(b.dataset.person)));
@@ -331,7 +441,8 @@ function renderGod() {
   const el = $("#pane-god");
   const alive = Object.values(S.chars).filter((c) => c.alive).sort((a, b) => b.prestige - a.prestige);
   const copt = alive.map((c) => `<option value="${c.id}">${esc(c.name)}</option>`).join("");
-  const popt = Object.values(S.provinces).map((p) => `<option value="${p.id}">${esc(p.name)}</option>`).join("");
+  const byReg = {}; for (const p of Object.values(S.provinces)) (byReg[p.region] ||= []).push(p);
+  const popt = Object.entries(byReg).map(([rid, ps]) => `<optgroup label="${esc(MAP.regions[rid].name)}주">${ps.map((p) => `<option value="${p.id}">${esc(p.name)}</option>`).join("")}</optgroup>`).join("");
   const keep = {}; $$("select, textarea, input", el).forEach((x) => (keep[x.id] = x.value));
   el.innerHTML = `<div class="god">
     <section><h4>섭리</h4><p class="hint">세상에 일어날 일을 정합니다. 다음 계절 판관이 이 일을 실제로 일으키고 결과를 정합니다.</p>
@@ -389,9 +500,14 @@ $$("#evfilters button").forEach((b) => (b.onclick = () => {
 }));
 $("#btnTurn").onclick = nextTurn;
 $("#auto").onchange = () => { if (!$("#auto").checked) { clearTimeout(autoTimer); autoTimer = null; } else schedule(); };
-$("#map").addEventListener("mousemove", onMove);
+$("#map").addEventListener("pointerdown", onDown);
+$("#map").addEventListener("pointermove", onPMove);
+$("#map").addEventListener("pointerup", onUp);
+$("#map").addEventListener("pointercancel", onUp);
 $("#map").addEventListener("mouseleave", () => ($("#tip").hidden = true));
-$("#map").addEventListener("click", onClick);
+$("#map").addEventListener("wheel", (e) => { e.preventDefault(); const [x, y] = local(e); zoomAt(view.z * (e.deltaY < 0 ? 1.18 : 1 / 1.18), x, y); }, { passive: false });
+$("#zin").onclick = () => zoomAt(view.z * 1.5, $("#mapwrap").clientWidth / 2, $("#mapwrap").clientHeight / 2);
+$("#zout").onclick = () => { if (view.z / 1.5 <= 1.01) { view.z = 1; view.px = view.py = 0; $("#map").style.touchAction = "pan-y"; renderMap(); } else zoomAt(view.z / 1.5, $("#mapwrap").clientWidth / 2, $("#mapwrap").clientHeight / 2); };
 window.addEventListener("resize", () => renderMap());
 
 /* ---------------- 설정 ---------------- */

@@ -4,9 +4,19 @@
 const SEASONS = ["봄", "여름", "가을", "겨울"];
 const PALETTE = ["#7d5a2c", "#4a6b8a", "#8c4a2f", "#567d46", "#6d4c7d", "#9a7b2f", "#2f6d6a",
   "#a0522d", "#556b2f", "#704214", "#3d5a80", "#8b3a62"];
-const SAVE_KEY = "rotwald.world.v1";
+const SAVE_KEY = "rotwald.world.v2";
 const SETTINGS_KEY = "rotwald.settings.v1";
-const P = DATA.prompts;
+const P = { ...DATA.prompts };
+P.WORLD += `
+지리: 왕국은 16개 주(州)로 나뉘고, 각 주는 2~4개 영지로 나뉜다. 영주는 영지 단위로 땅을 가진다.
+정착지는 인구에 따라 마을(1천 미만), 소도시(1천~5천), 중도시(5천~1만5천), 대도시(1만5천 이상)로 나뉜다. 인구는 계절마다 늘거나 줄고, 전쟁·역병·흉작에 무너지면 버려져 폐허가 된다.
+영지의 세금과 징집병은 개발도와 정착지 인구에서 나온다. 큰 도시를 가진 자가 부유하다.`;
+P.GM_SYSTEM = P.GM_SYSTEM.replace("[출력]", `[정착지 효과] 역병·기근·약탈·번영 같은 일은 인구로 구현하라:
+{"type":"pop","target":"정착지id 또는 영지id","pct":-25}   (영지id면 그 영지의 모든 정착지)
+{"type":"found","province":"영지id","name":"새 정착지 이름","pop":250}   (새 마을 건설; 드물게)
+인구가 100 아래로 떨어진 정착지는 버려진다.
+
+[출력]`);
 const clone = (o) => JSON.parse(JSON.stringify(o));
 const rand = Math.random;
 const randint = (a, b) => a + Math.floor(rand() * (b - a + 1));
@@ -34,36 +44,6 @@ function _fbm(x, y, seed, oct = 4) {
   for (let o = 0; o < oct; o++) { v += amp * _vnoise(x * freq, y * freq, seed + o * 17); tot += amp; amp *= 0.5; freq *= 2; }
   return v / tot;
 }
-function buildMap(seed = 7) {
-  const W = DATA.grid_w, H = DATA.grid_h, provs = DATA.provinces;
-  const grid = new Array(W * H).fill(-1), cx = W / 2, cy = H / 2;
-  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
-    const wx = x + (_fbm(x / 18, y / 18, seed) - 0.5) * 16;
-    const wy = y + (_fbm(x / 18 + 40, y / 18 + 40, seed) - 0.5) * 16;
-    const dx = (x - cx) / (W * 0.47), dy = (y - cy) / (H * 0.46);
-    const coast = Math.sqrt(dx * dx + dy * dy) + (_fbm(x / 14, y / 14, seed + 99) - 0.5) * 0.45;
-    if (coast > 0.93) continue;
-    let best = -1, bd = 1e9;
-    provs.forEach((p, i) => { const d = (wx - p[2]) ** 2 + (wy - p[3]) ** 2; if (d < bd) { bd = d; best = i; } });
-    if (bd > 900) continue;
-    grid[y * W + x] = best;
-  }
-  const n = provs.length, adj = provs.map(() => new Set()), sx = Array(n).fill(0), sy = Array(n).fill(0), cnt = Array(n).fill(0);
-  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
-    const p = grid[y * W + x]; if (p < 0) continue;
-    sx[p] += x; sy[p] += y; cnt[p]++;
-    for (const [nx, ny] of [[x + 1, y], [x, y + 1]]) {
-      if (nx < W && ny < H) { const q = grid[ny * W + nx]; if (q >= 0 && q !== p) { adj[p].add(q); adj[q].add(p); } }
-    }
-  }
-  const geo = {};
-  provs.forEach((p, i) => {
-    geo[p[0]] = { idx: i, cx: cnt[i] ? +(sx[i] / cnt[i]).toFixed(1) : p[2], cy: cnt[i] ? +(sy[i] / cnt[i]).toFixed(1) : p[3],
-      adj: [...adj[i]].map((j) => provs[j][0]).sort() };
-  });
-  return { w: W, h: H, grid, geo, order: provs.map((p) => p[0]) };
-}
-
 /* ---------------- 설정 ---------------- */
 function defaultSettings() {
   const c = DATA.config;
@@ -121,6 +101,7 @@ async function callAnthropic(spec, key, system, user) {
   return { text, usage: { inp: u.input_tokens || 0, out: u.output_tokens || 0, cache_read: u.cache_read_input_tokens || 0, cache_write: u.cache_creation_input_tokens || 0 } };
 }
 async function callOpenAI(spec, key, system, user) {
+  if (!/json/i.test(user)) user += "\n\n결과는 JSON 객체 하나로만 출력하라.";
   const body = { model: spec.model, instructions: system, input: user, max_output_tokens: spec.max_tokens || 2000,
     text: { format: { type: "json_object" } } };
   if (spec.reasoning) body.reasoning = { effort: spec.reasoning };
@@ -186,7 +167,8 @@ function mockGM(ctx) {
       text: `(모의 판정, 주사위 ${d}) ${names[r.actor]}의 계획은 ${oc === "success" ? "뜻대로 되었다" : oc === "partial" ? "반쯤 이루어졌다" : "어긋났다"}.`, effects: eff };
   });
   const events = ctx.god.map((g) => ({ title: "신의 섭리", text: "(모의) " + g.text, public: true, effects: [] }));
-  if (rand() < 0.25) events.push({ title: "흉작", text: "(모의) 늦서리가 내려 남부의 밀이 상했다.", public: true, effects: [{ type: "dev", province: "rosental", delta: -1 }] });
+  if (rand() < 0.2) events.push({ title: "흉작", text: "(모의) 늦서리가 내려 남부의 밀이 상했다.", public: true, effects: [{ type: "dev", province: "rosental", delta: -1 }, { type: "pop", target: "rosental", pct: -12 }] });
+  if (rand() < 0.06) events.push({ title: "역병", text: "(모의) 늪지에서 역병이 번졌다.", public: true, effects: [{ type: "pop", target: "moorbruck", pct: -40 }, { type: "pop", target: "moorbruck_1", pct: -40 }] });
   return { rulings, events, spawn: rand() < 0.15 ? [{ role: choice(MOCK.titles), reason: "모의 등장" }] : [],
     chronicle: `${ctx.date}. (모의 연대기 — 설정에서 API 키를 넣으면 판관이 실제로 씁니다.) 이번 계절 궁정에는 ${ctx.digest.length}건의 일이 기록되었고, ${ctx.rulings.length}건의 은밀한 계략이 어둠 속에서 움직였다.` };
 }
@@ -238,7 +220,7 @@ class Game {
     this.onChange = () => {};
     this.state = null;
     try { this.state = JSON.parse(localStorage.getItem(SAVE_KEY) || "null"); } catch (e) { this.state = null; }
-    if (!this.state || !this.state.chars) this.reset(true);
+    if (!this.state || !this.state.chars || this.state.version !== 2) this.reset(true);
     this.state.status = { running: false, phase: "", error: "" };
     this.applyGeo();
     const month = new Date().toISOString().slice(0, 7);
@@ -248,11 +230,14 @@ class Game {
     }
   }
   applyGeo() {
-    for (const [id, g] of Object.entries(this.map.geo)) Object.assign(this.state.provinces[id], g);
+    for (const [id, g] of Object.entries(this.map.geo)) {
+      const p = this.state.provinces[id]; if (!p) continue;
+      p.idx = g.idx; p.cx = g.cx; p.cy = g.cy; p.adj = g.adj; p.region = g.region;
+    }
   }
   reset(first = false) {
     const usage = this.state?.usage;
-    this.state = clone(DATA.initial);
+    this.state = newWorldState(this.map);
     if (usage) this.state.usage = usage;
     if (!this.state.usage.month) this.state.usage.month = new Date().toISOString().slice(0, 7);
     this.applyGeo();
@@ -277,8 +262,16 @@ class Game {
   alive(id) { const c = this.C(id); return !!(c && c.alive); }
   name(id) { const c = this.C(id); return c ? c.name : String(id); }
   holdings(id) { return Object.values(this.state.provinces).filter((p) => p.owner === id); }
-  levy(id) { return this.holdings(id).reduce((a, p) => a + p.dev * 120, 0); }
-  income(id) { let inc = this.holdings(id).reduce((a, p) => a + p.dev * 12, 0); if (this.C(id)?.house === "교회") inc += 8; return inc; }
+  setts(pid) { return Object.values(this.state.settlements).filter((s) => s.county === pid); }
+  countyPop(pid) { return this.setts(pid).reduce((a, s) => a + s.pop, 0); }
+  countyLevy(pid) { return Math.round(this.state.provinces[pid].dev * 25 + this.countyPop(pid) / 22); }
+  countyIncome(pid) { return Math.round(this.state.provinces[pid].dev * 3 + this.countyPop(pid) / 160); }
+  levy(id) { return this.holdings(id).reduce((a, p) => a + this.countyLevy(p.id), 0); }
+  income(id) { let inc = this.holdings(id).reduce((a, p) => a + this.countyIncome(p.id), 0); if (this.C(id)?.house === "교회") inc += 8; return inc; }
+  settText(pid) {
+    return this.setts(pid).sort((a, b) => b.pop - a.pop).map((s) => `${s.name}(${tierOf(s.pop).name} ${s.pop.toLocaleString()}명)`).join(", ") || "정착지 없음";
+  }
+  regionName(rid) { return this.map.regions[rid]?.name || rid; }
   isMock(modelKey) { return !this.settings.keys[this.settings.models[modelKey].provider]; }
   allies(id) {
     const out = [];
@@ -346,9 +339,22 @@ class Game {
       return `- ${id} | ${c.name} | ${c.title} | ${c.house} | 나이 ${c.age} | 영지 ${this.holdings(id).length}곳 | 나의 호감 ${op >= 0 ? "+" : ""}${op}`;
     }).join("\n");
   }
-  provinceTable() {
-    return Object.values(this.state.provinces).map((p) =>
-      `- ${p.id} | ${p.name} | 소유 ${p.owner ? this.name(p.owner) : "공석"}(${p.owner}) | 개발도 ${p.dev} | ${p.terrain} | 인접: ${p.adj.join(", ")}`).join("\n");
+  provinceTable(forId) {
+    const s = this.state, provs = Object.values(s.provinces);
+    const line = (p) => `- ${p.id} | ${p.name} | ${this.regionName(p.region)}주 | 소유 ${p.owner ? this.name(p.owner) : "공석"}(${p.owner}) | 개발 ${p.dev} | ${p.terrain} | ${this.settText(p.id)}`;
+    if (!forId) return provs.map(line).join("\n"); // 판관은 전부 본다
+    const mine = new Set(provs.filter((p) => p.owner === forId).map((p) => p.id));
+    const near = new Set(provs.filter((p) => !mine.has(p.id) && p.adj.some((a) => mine.has(a))).map((p) => p.id));
+    const detail = provs.filter((p) => mine.has(p.id) || near.has(p.id)).map((p) => line(p) + (mine.has(p.id) ? " [내 땅]" : " [이웃]"));
+    const byRegion = {};
+    for (const p of provs) if (!mine.has(p.id) && !near.has(p.id)) (byRegion[p.region] ||= []).push(p);
+    const summary = Object.entries(byRegion).map(([rid, ps]) => {
+      const owners = [...new Set(ps.map((p) => p.owner ? this.name(p.owner) : "공석"))].join("/");
+      const big = ps.flatMap((p) => this.setts(p.id)).filter((x) => x.pop >= 1000).sort((a, b) => b.pop - a.pop).slice(0, 2)
+        .map((x) => `${x.name}(${tierOf(x.pop).name})`).join(", ");
+      return `- ${this.regionName(rid)}주: ${owners} — 영지 ${ps.map((p) => p.id).join(", ")}${big ? " — 주요 도시 " + big : ""}`;
+    });
+    return detail.join("\n") + (summary.length ? "\n[멀리 있는 주 (요약)]\n" + summary.join("\n") : "");
   }
   warsText() {
     const s = this.state;
@@ -362,7 +368,7 @@ class Game {
     return `[지금] ${this.date()} (나이 ${c.age})
 [너의 처지]
 직함: ${c.title} / 금화 ${c.gold} / 위신 ${c.prestige} / 특성: ${c.traits.join(", ")}
-영지: ${hold.map((p) => `${p.name}(${p.id}, 개발도 ${p.dev})`).join(", ") || "없음"}
+영지 ${hold.length}곳, 수입 ${this.income(id)}/계절: ${hold.map((p) => `${p.name}(${p.id}, 개발 ${p.dev})`).join(", ") || "없음"}
 징집 가능 병력: ${this.levy(id)}명, 군대 소집 상태: ${c.army_raised ? "소집됨" : "해산"}
 주군: ${c.liege ? this.name(c.liege) : "없음"} / 후계자: ${c.heir ? this.name(c.heir) : "미정"}
 동맹: ${this.allies(id).map((a) => this.name(a)).join(", ") || "없음"}
@@ -372,8 +378,8 @@ class Game {
 [알려진 인물]
 ${this.knownPeople(id)}
 
-[영지]
-${this.provinceTable()}
+[영지 — 너의 땅과 이웃]
+${this.provinceTable(id)}
 
 [전쟁]
 ${this.warsText()}
@@ -453,7 +459,7 @@ ${c.thoughts.slice(-3).map((t) => `- (${t.date}) ${t.text}`).join("\n") || "- �
           + this.charUserMsg(id).split("[알려진 인물]")[0] + "\n[네가 아는 것]\n" + c.knowledge.slice(-8).map((k) => "- " + k.text).join("\n");
       });
       const pub = s.events.filter((e) => e.public).slice(-10).map((e) => `- ${e.title}: ${e.text}`).join("\n");
-      const user = `[알려진 인물]\n${this.knownPeople(minors[0])}\n\n[영지]\n${this.provinceTable()}\n\n[최근 공개된 일]\n${pub}\n\n${blocks.join("\n\n")}\n\n각 인물의 이번 계절 결정을 JSON으로.`;
+      const user = `[알려진 인물]\n${this.knownPeople(minors[0])}\n\n[영지 (주별 요약)]\n${this.provinceTable("__none__")}\n\n[최근 공개된 일]\n${pub}\n\n${blocks.join("\n\n")}\n\n각 인물의 이번 계절 결정을 JSON으로.`;
       minorJob = this.callJSON("terra", P.MINOR_SYSTEM, user, "minor", { chars: Object.fromEntries(minors.map((id) => [id, this.mockCtxFor(id)])) });
     }
     this.phase("인물들이 궁리하는 중: " + [...majors, ...semis, ...minors].map((id) => this.name(id)).join(", "));
@@ -470,7 +476,7 @@ ${c.thoughts.slice(-3).map((t) => `- (${t.date}) ${t.text}`).join("\n") || "- �
     this.phase("엔진이 편지와 군대를 옮기는 중");
     const { digest, rulings } = this.applyDecisions(decisions);
     errors.forEach((e) => digest.push(`(호출 실패: ${e})`));
-    digest.push(...this.economy(), ...this.resolveWars());
+    digest.push(...this.economy(), ...this.resolveWars(), ...this.settlementsTick());
     const gmUser = this.gmUserMsg(decisions, digest, rulings);
     const god = [...s.god_queue]; s.god_queue = [];
 
@@ -569,6 +575,7 @@ ${c.thoughts.slice(-3).map((t) => `- (${t.date}) ${t.text}`).join("\n") || "- �
         const cost = 90 * prov.dev;
         if (c.gold >= cost) {
           c.gold -= cost; prov.dev++;
+          for (const st of this.setts(prov.id)) st.pop = Math.round(st.pop * 1.03);
           this._event(`${prov.name} 개발`, `${nm}이(가) 금화 ${cost}을 들여 ${prov.name}을(를) 일구었다.`, { public: true, kind: "build", actors: [id] });
           digest.push(`[개발] ${nm}: ${prov.name} 개발도 ${prov.dev}`);
         }
@@ -617,6 +624,63 @@ ${c.thoughts.slice(-3).map((t) => `- (${t.date}) ${t.text}`).join("\n") || "- �
     s.proposals = s.proposals.slice(-60);
     return out;
   }
+  /* 정착지: 계절마다 인구가 늘고 줄고, 규모가 바뀌고, 버려지고, 새로 생긴다 */
+  settlementsTick() {
+    const s = this.state, out = [], season = s.season;
+    const warTargets = new Set(s.wars.map((w) => w.province));
+    const terrainBonus = { 평야: 0.002, 강변: 0.003, 호수: 0.002, 포도원: 0.002, 초원: 0.001, 늪: -0.003, 산악: -0.001, 변경: -0.002, 요새: -0.001 };
+    for (const st of Object.values(s.settlements)) {
+      const p = s.provinces[st.county]; if (!p) continue;
+      const before = tierOf(st.pop);
+      const cap = p.dev * 6000 * (p.seat ? 1.6 : 1) * (p.capital ? 2 : 1);
+      let g = 0.003 + 0.0015 * (p.dev - 3) + (terrainBonus[p.terrain] || 0) / 2 + uniform(-0.009, 0.009) - 0.006 * (st.pop / cap);
+      if (season === 3) g -= 0.006; else if (season === 1) g += 0.002;
+      if (warTargets.has(p.id)) g -= 0.02;
+      if (p.owner && this.C(p.owner)?.army_raised) g -= 0.002;
+      if (st.pop < 350) g += uniform(-0.05, 0.03); // 작은 마을은 운명이 출렁인다
+      st.pop = Math.max(0, Math.round(st.pop * (1 + g)));
+      st.peak = Math.max(st.peak || 0, st.pop);
+      const after = tierOf(st.pop);
+      if (st.pop < RUIN_BELOW) { out.push(this.ruinSettlement(st, "사람들이 하나둘 떠났다")); continue; }
+      if (after.min !== before.min) {
+        const up = after.min > before.min;
+        this._event(`${st.name}, ${after.name}로 ${up ? "성장" : "쇠퇴"}`, `${this.regionName(p.region)}주 ${p.name}의 ${st.name}이(가) ${after.name}${up ? "로 커졌다" : "로 줄어들었다"}. 인구 약 ${st.pop.toLocaleString()}명.`,
+          { public: true, kind: up ? "grow" : "decline", actors: p.owner ? [p.owner] : [] });
+        out.push(`[정착지] ${st.name}: ${before.name} → ${after.name} (${st.pop}명)`);
+      }
+    }
+    // 새 마을: 평화롭고 개발된 영지에서 가끔
+    for (const p of Object.values(s.provinces)) {
+      if (warTargets.has(p.id) || p.dev < 2) continue;
+      if (this.setts(p.id).length >= 3) continue;
+      if (rand() < 0.002 + 0.001 * p.dev) { const st = this.foundSettlement(p.id, null, randint(160, 320)); if (st) out.push(`[새 마을] ${p.name}에 ${st.name}`); }
+    }
+    return out;
+  }
+  ruinSettlement(st, why) {
+    const s = this.state, p = s.provinces[st.county];
+    delete s.settlements[st.id];
+    s.ruins.push({ name: st.name, x: st.x, y: st.y, turn: s.turn, county: st.county });
+    s.ruins = s.ruins.slice(-30);
+    this._event(`${st.name}, 폐허가 되다`, `${p ? p.name + "의 " : ""}${st.name}이(가) 버려졌다. ${why}`, { public: true, kind: "ruin", actors: p?.owner ? [p.owner] : [] });
+    return `[폐허] ${st.name} — ${why}`;
+  }
+  foundSettlement(pid, name, pop) {
+    const s = this.state, p = s.provinces[pid]; if (!p) return null;
+    const cells = this.map.cellsByCounty[p.idx], W = this.map.w;
+    const occupied = Object.values(s.settlements).filter((x) => x.county === pid);
+    const ok = cells.filter((k) => occupied.every((o) => ((k % W) - o.x) ** 2 + (((k / W) | 0) - o.y) ** 2 > 30));
+    if (!ok.length) return null;
+    const cell = choice(ok);
+    const taken = new Set([...Object.values(s.settlements).map((x) => x.name), ...Object.values(s.provinces).map((x) => x.name)]);
+    const nm = name && !taken.has(name) ? str(name, 20) : makeNamer(rand, taken)();
+    const id = "s" + (++s.next_sid);
+    const st = { id, name: nm, county: pid, x: cell % W, y: (cell / W) | 0, pop: Math.max(120, Math.round(pop)), founded: s.turn, peak: Math.round(pop) };
+    s.settlements[id] = st;
+    this._event("새 마을", `${this.regionName(p.region)}주 ${p.name}에 ${nm} 마을이 들어섰다.`, { public: true, kind: "grow", actors: p.owner ? [p.owner] : [] });
+    return st;
+  }
+
   power(id) {
     const c = this.C(id);
     let b = this.levy(id) * (c.army_raised ? 1.6 : 0.6);
@@ -632,6 +696,7 @@ ${c.thoughts.slice(-3).map((t) => `- (${t.date}) ${t.text}`).join("\n") || "- �
       const win = pa > pd; w.score += win ? 1 : -1;
       const [winner, loser] = win ? [att, dfn] : [dfn, att];
       const dead = Math.floor(Math.min(pa, pd) * uniform(0.05, 0.15));
+      for (const st of this.setts(prov.id)) st.pop = Math.round(st.pop * uniform(0.86, 0.97));
       this._event(`${prov.name} 전투`, `${this.name(winner)}의 군대가 ${this.name(loser)}의 군대를 물리쳤다. 약 ${dead}명이 쓰러졌다.`, { public: true, kind: "battle", actors: [att, dfn] });
       out.push(`[전투] ${prov.name}: 승자 ${this.name(winner)} (공격 ${pa | 0} vs 방어 ${pd | 0}), 전황 ${w.score >= 0 ? "+" : ""}${w.score}`);
       if (rand() < 0.06) { this.kill(loser, `${prov.name} 전투에서 전사`); out.push(`[전사] ${this.name(loser)}`); continue; }
@@ -792,6 +857,19 @@ ${s.chronicle.slice(-2).map((x) => `- (${x.date}) ${x.text}`).join("\n") || "없
       else if (t === "crown" && this.alive(who) && who !== s.king) this.crown(who);
       else if (t === "heir" && this.alive(who) && (f.heir == null || this.alive(f.heir))) this.C(who).heir = f.heir ?? null;
       else if (t === "liege" && this.alive(who)) this.C(who).liege = this.alive(f.liege) ? f.liege : null;
+      else if (t === "pop") {
+        const pct = clamp(int(f.pct), -90, 200) / 100;
+        const targets = s.settlements[f.target] ? [s.settlements[f.target]] : s.provinces[f.target] ? this.setts(f.target) : [];
+        for (const st of targets) {
+          const before = tierOf(st.pop);
+          st.pop = Math.max(0, Math.round(st.pop * (1 + pct)));
+          if (st.pop < RUIN_BELOW) this.ruinSettlement(st, str(f.cause || "재앙이 휩쓸고 갔다", 80));
+          else if (tierOf(st.pop).min !== before.min) {
+            const up = tierOf(st.pop).min > before.min;
+            this._event(`${st.name}, ${tierOf(st.pop).name}로 ${up ? "성장" : "쇠퇴"}`, `인구 약 ${st.pop.toLocaleString()}명.`, { public: true, kind: up ? "grow" : "decline" });
+          }
+        }
+      } else if (t === "found" && s.provinces[f.province]) this.foundSettlement(f.province, f.name, clamp(int(f.pop, 250), 120, 3000));
     }
   }
   async spawn(reqs) {

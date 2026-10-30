@@ -6,7 +6,7 @@ const ANTHROPIC = new Set(["gm", "sonnet", "haiku"]);
 const TIER = { major: "주요 인물", semi: "준주요 인물", minor: "단역" };
 
 let S = null, MAP = null, sel = { prov: null, person: null }, evFilter = "all";
-let sigs = {}, autoTimer = null, base = null, baseSig = "";
+let sigs = {}, autoTimer = null;
 
 const G = new Game();
 let wakeLock = null;
@@ -75,27 +75,27 @@ const CELL = 8;
 function hexRgb(h) { const n = parseInt(h.slice(1), 16); return [(n >> 16) & 255, (n >> 8) & 255, n & 255]; }
 function hash(x, y) { let h = (x * 374761393 + y * 668265263) >>> 0; h = Math.imul(h ^ (h >>> 13), 1274126177) >>> 0; return ((h ^ (h >>> 16)) & 255) / 255; }
 
-function buildBase() {
+/* 땅 색은 계산만 캐시하고, 그리기는 매번 화면 캔버스에 직접 한다.
+   (안드로이드는 앱을 잠깐 나갔다 오면 화면 밖 캔버스의 내용을 비워 버려서, 그림을 캐시하면 지도가 사라진다) */
+let landCache = null;
+function landColors() {
   const { w, h, grid, order } = MAP;
   const owners = order.map((id) => S.provinces[id].owner);
   const sig = owners.join() + Object.values(S.chars).map((c) => c.color).join();
-  if (sig === baseSig && base) return;
-  baseSig = sig;
-  const cv = base || document.createElement("canvas");
-  cv.width = w * CELL; cv.height = h * CELL;
-  const g = cv.getContext("2d");
-  // 바다와 얕은 물
-  const dist = new Int16Array(w * h).fill(99);
-  const q = [];
-  for (let i = 0; i < w * h; i++) if (grid[i] >= 0) { dist[i] = 0; q.push(i); }
-  for (let qi = 0; qi < q.length; qi++) {
-    const i = q[qi], x = i % w, y = (i / w) | 0;
-    for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
-      const nx = x + dx, ny = y + dy; if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
-      const j = ny * w + nx; if (dist[j] > dist[i] + 1 && dist[i] < 5) { dist[j] = dist[i] + 1; q.push(j); }
+  if (landCache && landCache.sig === sig) return landCache;
+  if (!landCache) { // 바다 깊이는 한 번만 계산
+    const dist = new Int16Array(w * h).fill(99), q = [];
+    for (let i = 0; i < w * h; i++) if (grid[i] >= 0) { dist[i] = 0; q.push(i); }
+    for (let qi = 0; qi < q.length; qi++) {
+      const i = q[qi], x = i % w, y = (i / w) | 0;
+      for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        const nx = x + dx, ny = y + dy; if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
+        const j = ny * w + nx; if (dist[j] > dist[i] + 1 && dist[i] < 5) { dist[j] = dist[i] + 1; q.push(j); }
+      }
     }
+    landCache = { dist };
   }
-  const ownerOf = (i) => (grid[i] < 0 ? null : owners[grid[i]]);
+  const colors = new Array(w * h), dist = landCache.dist;
   for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
     const i = y * w + x, p = grid[i], n = hash(x, y);
     let r, gg, b;
@@ -107,14 +107,25 @@ function buildBase() {
       const land = [176, 160, 122], mix = 0.38, sh = 0.9 + n * 0.14;
       r = (c[0] * (1 - mix) + land[0] * mix) * sh; gg = (c[1] * (1 - mix) + land[1] * mix) * sh; b = (c[2] * (1 - mix) + land[2] * mix) * sh;
     }
-    g.fillStyle = `rgb(${r | 0},${gg | 0},${b | 0})`;
-    g.fillRect(x * CELL, y * CELL, CELL, CELL);
+    colors[i] = `rgb(${r | 0},${gg | 0},${b | 0})`;
   }
-  // 바다 빗금
-  g.save(); g.strokeStyle = "rgba(200,215,225,0.035)"; g.lineWidth = 1;
-  for (let k = -cv.height; k < cv.width; k += 9) { g.beginPath(); g.moveTo(k, 0); g.lineTo(k + cv.height, cv.height); g.stroke(); }
-  g.restore();
-  // 경계선
+  landCache = { dist, sig, colors, owners };
+  return landCache;
+}
+function drawLand(g, f) {
+  const { w, h, grid } = MAP, { colors, owners } = landColors();
+  g.save();
+  g.translate(f.ox, f.oy); g.scale(f.s, f.s);
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    g.fillStyle = colors[y * w + x];
+    g.fillRect(x * CELL, y * CELL, CELL + 0.6, CELL + 0.6); // 살짝 겹쳐 칸 사이 틈을 없앤다
+  }
+  const W = w * CELL, H = h * CELL;
+  g.strokeStyle = "rgba(200,215,225,0.035)"; g.lineWidth = 1 / f.s;
+  g.beginPath();
+  for (let k = -H; k < W; k += 9) { g.moveTo(k, 0); g.lineTo(k + H, H); }
+  g.stroke();
+  const ownerOf = (i) => (grid[i] < 0 ? null : owners[grid[i]]);
   const seg = (style, width, test) => {
     g.beginPath(); g.strokeStyle = style; g.lineWidth = width; g.lineCap = "square";
     for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
@@ -127,7 +138,7 @@ function buildBase() {
   seg("rgba(30,22,14,0.35)", 1, (a, b) => grid[a] >= 0 && grid[b] >= 0 && grid[a] !== grid[b] && ownerOf(a) === ownerOf(b));
   seg("rgba(24,16,10,0.9)", 2.4, (a, b) => grid[a] >= 0 && grid[b] >= 0 && ownerOf(a) !== ownerOf(b));
   seg("rgba(12,10,8,0.95)", 3, (a, b) => (grid[a] < 0) !== (grid[b] < 0));
-  base = cv;
+  g.restore();
 }
 
 function fit() {
@@ -140,12 +151,10 @@ function fit() {
 
 function renderMap() {
   if (!MAP || !S) return;
-  buildBase();
   const c = $("#map"), g = c.getContext("2d"), f = fit();
   g.setTransform(f.dpr, 0, 0, f.dpr, 0, 0);
   g.fillStyle = "#15212b"; g.fillRect(0, 0, f.W, f.H);
-  g.imageSmoothingEnabled = true;
-  g.drawImage(base, f.ox, f.oy, MAP.w * CELL * f.s, MAP.h * CELL * f.s);
+  drawLand(g, f);
   const P = (x, y) => [f.ox + (x + 0.5) * CELL * f.s, f.oy + (y + 0.5) * CELL * f.s];
 
   // 선택한 영지 테두리
@@ -427,7 +436,13 @@ $("#s-file").onchange = async (e) => {
   catch (err) { toast("불러오지 못했습니다: " + err.message); }
   e.target.value = "";
 };
-document.addEventListener("visibilitychange", () => { if (!document.hidden && S && (S.status.running || $("#auto").checked)) holdScreen(true); });
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) return;
+  renderMap();
+  if (S && (S.status.running || $("#auto").checked)) holdScreen(true);
+});
+$("#map").addEventListener("contextrestored", () => renderMap());
+window.addEventListener("pageshow", () => renderMap());
 
 MAP = G.map;
 G.onChange = refresh;

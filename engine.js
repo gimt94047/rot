@@ -10,11 +10,17 @@ const P = { ...DATA.prompts };
 P.WORLD += `
 지리: 왕국은 16개 주(州)로 나뉘고, 각 주는 2~4개 영지로 나뉜다. 영주는 영지 단위로 땅을 가진다.
 정착지는 인구에 따라 마을(1천 미만), 소도시(1천~5천), 중도시(5천~1만5천), 대도시(1만5천 이상)로 나뉜다. 인구는 계절마다 늘거나 줄고, 전쟁·역병·흉작에 무너지면 버려져 폐허가 된다.
-영지의 세금과 징집병은 개발도와 정착지 인구에서 나온다. 큰 도시를 가진 자가 부유하다.`;
+영지의 세금과 징집병은 개발도와 정착지 인구에서 나온다. 큰 도시를 가진 자가 부유하다.
+전쟁에서 이기면 먼저 목표 영지를 '점령'하고(세금은 점령자에게), 계속 이기면 병합한다. 지면 점령이 풀린다.
+반란군이 영지를 점령하기도 한다. 영주가 진압하지 못하면 반란 지도자가 그 땅의 새 주인이 된다.`;
 P.GM_SYSTEM = P.GM_SYSTEM.replace("[출력]", `[정착지 효과] 역병·기근·약탈·번영 같은 일은 인구로 구현하라:
 {"type":"pop","target":"정착지id 또는 영지id","pct":-25}   (영지id면 그 영지의 모든 정착지)
 {"type":"found","province":"영지id","name":"새 정착지 이름","pop":250}   (새 마을 건설; 드물게)
 인구가 100 아래로 떨어진 정착지는 버려진다.
+
+[반란] 학정·기근·역병·패전·종교 갈등 뒤에는 반란이 일어날 수 있다(남발 금지, 몇 계절에 한 번):
+{"type":"revolt","province":"영지id","leader":"반란 지도자 이름","cause":"이유"}
+{"type":"suppress","province":"영지id"}   (협상·사면·학살 등으로 반란이 끝남)
 
 [출력]`);
 const clone = (o) => JSON.parse(JSON.stringify(o));
@@ -168,6 +174,7 @@ function mockGM(ctx) {
   });
   const events = ctx.god.map((g) => ({ title: "신의 섭리", text: "(모의) " + g.text, public: true, effects: [] }));
   if (rand() < 0.2) events.push({ title: "흉작", text: "(모의) 늦서리가 내려 남부의 밀이 상했다.", public: true, effects: [{ type: "dev", province: "rosental", delta: -1 }, { type: "pop", target: "rosental", pct: -12 }] });
+  if (rand() < 0.08) events.push({ title: "농민 봉기", text: "(모의) 세금에 지친 농민들이 들고일어났다.", public: true, effects: [{ type: "revolt", province: choice(["dunkelwald_1", "wolfstal", "moorbruck_2", "silberberg_1"]), leader: choice(MOCK.names), cause: "가혹한 세금" }] });
   if (rand() < 0.06) events.push({ title: "역병", text: "(모의) 늪지에서 역병이 번졌다.", public: true, effects: [{ type: "pop", target: "moorbruck", pct: -40 }, { type: "pop", target: "moorbruck_1", pct: -40 }] });
   return { rulings, events, spawn: rand() < 0.15 ? [{ role: choice(MOCK.titles), reason: "모의 등장" }] : [],
     chronicle: `${ctx.date}. (모의 연대기 — 설정에서 API 키를 넣으면 판관이 실제로 씁니다.) 이번 계절 궁정에는 ${ctx.digest.length}건의 일이 기록되었고, ${ctx.rulings.length}건의 은밀한 계략이 어둠 속에서 움직였다.` };
@@ -266,8 +273,18 @@ class Game {
   countyPop(pid) { return this.setts(pid).reduce((a, s) => a + s.pop, 0); }
   countyLevy(pid) { return Math.round(this.state.provinces[pid].dev * 25 + this.countyPop(pid) / 22); }
   countyIncome(pid) { return Math.round(this.state.provinces[pid].dev * 3 + this.countyPop(pid) / 160); }
-  levy(id) { return this.holdings(id).reduce((a, p) => a + this.countyLevy(p.id), 0); }
-  income(id) { let inc = this.holdings(id).reduce((a, p) => a + this.countyIncome(p.id), 0); if (this.C(id)?.house === "교회") inc += 8; return inc; }
+  occupiedBy(id) { return Object.values(this.state.provinces).filter((p) => p.occ && p.occ.by === id); }
+  levy(id) { return this.holdings(id).filter((p) => !p.occ).reduce((a, p) => a + this.countyLevy(p.id), 0); }
+  income(id) {
+    let inc = this.holdings(id).filter((p) => !p.occ).reduce((a, p) => a + this.countyIncome(p.id), 0)
+      + this.occupiedBy(id).reduce((a, p) => a + Math.round(this.countyIncome(p.id) * 0.7), 0);
+    if (this.C(id)?.house === "교회") inc += 8;
+    return inc;
+  }
+  occText(p) {
+    if (!p.occ) return "";
+    return p.occ.by === "rebels" ? ` [반란군 점령: ${p.occ.leader}, ${this.state.turn - p.occ.since + 1}계절째]` : ` [${this.name(p.occ.by)} 점령 중]`;
+  }
   settText(pid) {
     return this.setts(pid).sort((a, b) => b.pop - a.pop).map((s) => `${s.name}(${tierOf(s.pop).name} ${s.pop.toLocaleString()}명)`).join(", ") || "정착지 없음";
   }
@@ -341,7 +358,7 @@ class Game {
   }
   provinceTable(forId) {
     const s = this.state, provs = Object.values(s.provinces);
-    const line = (p) => `- ${p.id} | ${p.name} | ${this.regionName(p.region)}주 | 소유 ${p.owner ? this.name(p.owner) : "공석"}(${p.owner}) | 개발 ${p.dev} | ${p.terrain} | ${this.settText(p.id)}`;
+    const line = (p) => `- ${p.id} | ${p.name} | ${this.regionName(p.region)}주 | 소유 ${p.owner ? this.name(p.owner) : "공석"}(${p.owner}) | 개발 ${p.dev} | ${p.terrain} | ${this.settText(p.id)}${this.occText(p)}`;
     if (!forId) return provs.map(line).join("\n"); // 판관은 전부 본다
     const mine = new Set(provs.filter((p) => p.owner === forId).map((p) => p.id));
     const near = new Set(provs.filter((p) => !mine.has(p.id) && p.adj.some((a) => mine.has(a))).map((p) => p.id));
@@ -358,7 +375,10 @@ class Game {
   }
   warsText() {
     const s = this.state;
-    return s.wars.map((w) => `- ${w.id}: ${this.name(w.attacker)} → ${this.name(w.defender)} (목표 ${s.provinces[w.province].name}, 전황 ${w.score >= 0 ? "+" : ""}${w.score}, 명분: ${w.casus})`).join("\n") || "없음";
+    const wars = s.wars.map((w) => `- ${w.id}: ${this.name(w.attacker)} → ${this.name(w.defender)} (목표 ${s.provinces[w.province].name}${s.provinces[w.province].occ?.by === w.attacker ? " — 공격자가 점령 중" : ""}, 전황 ${w.score >= 0 ? "+" : ""}${w.score}, 3이면 병합, 명분: ${w.casus})`);
+    const revolts = Object.values(s.provinces).filter((p) => p.occ?.by === "rebels").map((p) =>
+      `- 반란: ${p.name}(${p.id}) — 지도자 ${p.occ.leader}, 영주 ${this.name(p.owner)}, 원인: ${p.occ.cause}, 기세 ${p.occ.score >= 0 ? "+" : ""}${p.occ.score} (3이면 반란 성공, -2면 진압)`);
+    return [...wars, ...revolts].join("\n") || "없음";
   }
   allianceText() { return this.state.alliances.map(([a, b]) => `- ${this.name(a)} ↔ ${this.name(b)}`).join("\n") || "없음"; }
   charUserMsg(id) {
@@ -598,7 +618,11 @@ ${c.thoughts.slice(-3).map((t) => `- (${t.date}) ${t.text}`).join("\n") || "- �
     if (p.kind === "alliance" && !has()) { s.alliances.push([a, b]); pub = true; }
     else if (p.kind === "marriage") { if (!has()) s.alliances.push([a, b]); this.C(a).prestige += 10; this.C(b).prestige += 10; pub = true; }
     else if (p.kind === "vassalage") { this.C(a).liege = b; pub = true; }
-    else if (p.kind === "peace") { const n = s.wars.length; s.wars = s.wars.filter((w) => !(new Set([w.attacker, w.defender, a, b]).size === 2)); pub = n !== s.wars.length; }
+    else if (p.kind === "peace") {
+      const n = s.wars.length;
+      s.wars.filter((w) => new Set([w.attacker, w.defender, a, b]).size === 2).forEach((w) => this.endOcc(w));
+      s.wars = s.wars.filter((w) => !(new Set([w.attacker, w.defender, a, b]).size === 2)); pub = n !== s.wars.length;
+    }
     this._opinion(a, b, 15); this._opinion(b, a, 10);
     this._know(a, `${this.name(b)}이(가) 나의 ${p.kind} 제안을 수락했다. “${reply}”`, "답신");
     const label = { alliance: "동맹 체결", marriage: "혼약 성사", vassalage: "봉신 서약", peace: "강화" }[p.kind] || "거래 성사";
@@ -636,6 +660,7 @@ ${c.thoughts.slice(-3).map((t) => `- (${t.date}) ${t.text}`).join("\n") || "- �
       let g = 0.003 + 0.0015 * (p.dev - 3) + (terrainBonus[p.terrain] || 0) / 2 + uniform(-0.009, 0.009) - 0.006 * (st.pop / cap);
       if (season === 3) g -= 0.006; else if (season === 1) g += 0.002;
       if (warTargets.has(p.id)) g -= 0.02;
+      if (p.occ) g -= 0.01;
       if (p.owner && this.C(p.owner)?.army_raised) g -= 0.002;
       if (st.pop < 350) g += uniform(-0.05, 0.03); // 작은 마을은 운명이 출렁인다
       st.pop = Math.max(0, Math.round(st.pop * (1 + g)));
@@ -691,7 +716,7 @@ ${c.thoughts.slice(-3).map((t) => `- (${t.date}) ${t.text}`).join("\n") || "- �
     const s = this.state, out = [], keep = [];
     for (const w of s.wars) {
       const att = w.attacker, dfn = w.defender, prov = s.provinces[w.province];
-      if (!this.alive(att) || !this.alive(dfn) || prov.owner !== dfn) { out.push(`[전쟁 종결 ${w.id}] 당사자 사망 또는 목표 영지 소유 변경`); continue; }
+      if (!this.alive(att) || !this.alive(dfn) || prov.owner !== dfn) { this.endOcc(w); out.push(`[전쟁 종결 ${w.id}] 당사자 사망 또는 목표 영지 소유 변경`); continue; }
       const pa = this.power(att) * uniform(0.6, 1.4), pd = this.power(dfn) * uniform(0.6, 1.4) * 1.15;
       const win = pa > pd; w.score += win ? 1 : -1;
       const [winner, loser] = win ? [att, dfn] : [dfn, att];
@@ -700,11 +725,21 @@ ${c.thoughts.slice(-3).map((t) => `- (${t.date}) ${t.text}`).join("\n") || "- �
       this._event(`${prov.name} 전투`, `${this.name(winner)}의 군대가 ${this.name(loser)}의 군대를 물리쳤다. 약 ${dead}명이 쓰러졌다.`, { public: true, kind: "battle", actors: [att, dfn] });
       out.push(`[전투] ${prov.name}: 승자 ${this.name(winner)} (공격 ${pa | 0} vs 방어 ${pd | 0}), 전황 ${w.score >= 0 ? "+" : ""}${w.score}`);
       if (rand() < 0.06) { this.kill(loser, `${prov.name} 전투에서 전사`); out.push(`[전사] ${this.name(loser)}`); continue; }
-      if (w.score >= 2) {
+      if (win && w.score >= 1 && prov.occ?.by !== att) {
+        prov.occ = { by: att, since: s.turn, war: w.id };
+        this._event(`${prov.name} 점령`, `${this.name(att)}의 군대가 ${prov.name}을(를) 점령했다. 세금이 점령군에게 들어간다.`, { public: true, kind: "war", actors: [att, dfn] });
+        out.push(`[점령] ${this.name(att)}이 ${prov.name} 점령`);
+      } else if (!win && w.score <= 0 && prov.occ?.war === w.id) {
+        delete prov.occ;
+        this._event(`${prov.name} 탈환`, `${this.name(dfn)}이(가) ${prov.name}을(를) 되찾았다.`, { public: true, kind: "war", actors: [att, dfn] });
+        out.push(`[탈환] ${this.name(dfn)}이 ${prov.name} 탈환`);
+      }
+      if (w.score >= 3) {
         this.transfer(prov.id, att); this.C(att).prestige += 15; this.C(dfn).prestige -= 10;
         this._event("전쟁 종결", `${this.name(att)}이(가) ${prov.name}을(를) 차지했다.`, { public: true, kind: "war", actors: [att, dfn] });
         out.push(`[전쟁 승리] ${this.name(att)}이 ${prov.name} 점령`);
       } else if (w.score <= -2) {
+        this.endOcc(w);
         const g = Math.min(150, Math.max(0, this.C(att).gold)); this.C(att).gold -= g; this.C(dfn).gold += g;
         this.C(att).prestige -= 15; this.C(dfn).prestige += 10;
         this._event("전쟁 종결", `${this.name(att)}의 침공이 실패했다. 배상금 ${g}.`, { public: true, kind: "war", actors: [att, dfn] });
@@ -712,11 +747,56 @@ ${c.thoughts.slice(-3).map((t) => `- (${t.date}) ${t.text}`).join("\n") || "- �
       } else keep.push(w);
     }
     s.wars = keep;
+    out.push(...this.revoltsTick());
+    return out;
+  }
+  endOcc(w) { for (const p of Object.values(this.state.provinces)) if (p.occ && p.occ.war === w.id) delete p.occ; }
+
+  /* 반란: 영주와 반란군이 계절마다 겨룬다 */
+  startRevolt(pid, leader, cause) {
+    const s = this.state, p = s.provinces[pid];
+    if (!p || !p.owner || p.occ) return null;
+    p.occ = { by: "rebels", since: s.turn, leader: str(leader || choice(MOCK.names), 30), cause: str(cause || "가혹한 세금", 120), score: 0,
+      strength: Math.round(this.countyLevy(pid) * uniform(0.9, 1.5)) };
+    this._event(`${p.name}에서 반란`, `${p.occ.leader}이(가) 이끄는 반란군이 ${p.name}을(를) 장악했다. 원인: ${p.occ.cause}`, { public: true, kind: "revolt", actors: [p.owner] });
+    this._wake(p.owner);
+    return p;
+  }
+  revoltsTick() {
+    const s = this.state, out = [];
+    for (const p of Object.values(s.provinces)) {
+      const o = p.occ; if (!o || o.by !== "rebels" || o.won) continue;
+      if (!p.owner || !this.alive(p.owner)) continue;
+      const army = this.C(p.owner).army_raised; // 군대를 소집해야 제대로 진압한다
+      const lord = Math.min(this.power(p.owner) * 0.6, this.countyLevy(p.id) * (army ? 3 : 1.6)) * uniform(0.5, 1.3);
+      const reb = o.strength * uniform(0.6, 1.4) * 1.2;
+      if (lord > reb) { o.score--; o.strength = Math.round(o.strength * 0.7); } else { o.score++; o.strength = Math.round(o.strength * 1.12); }
+      for (const st of this.setts(p.id)) st.pop = Math.round(st.pop * uniform(0.93, 0.99));
+      out.push(`[반란] ${p.name}: ${lord > reb ? this.name(p.owner) + " 우세" : "반란군 우세"}, 기세 ${o.score >= 0 ? "+" : ""}${o.score}`);
+      if (o.score <= -2) {
+        delete p.occ; this.C(p.owner).prestige += 5;
+        this._event(`${p.name} 반란 진압`, `${this.name(p.owner)}이(가) ${o.leader}의 반란을 짓눌렀다.`, { public: true, kind: "war", actors: [p.owner] });
+      } else if (o.score >= 3) {
+        o.won = true; this.C(p.owner).prestige -= 10;
+        this._event(`${p.name} 반란 성공`, `${o.leader}의 반란군이 ${this.name(p.owner)}을(를) 몰아냈다. 이제 그 땅은 반란 지도자의 것이다.`, { public: true, kind: "revolt", actors: [p.owner] });
+        s.spawn_queue.push({ role: `${o.leader} — ${p.name}에서 반란에 성공해 영주가 된 반란 지도자 (이름은 반드시 '${o.leader}')`, reason: "반란 성공", take_province: p.id, name: o.leader });
+      }
+    }
+    // 저절로 일어나는 반란: 위신이 바닥이거나 전쟁·재앙에 지친 영지
+    for (const p of Object.values(s.provinces)) {
+      if (!p.owner || p.occ) continue;
+      const lord = this.C(p.owner); if (!lord) continue;
+      let ch = 0.0008;
+      if (lord.prestige < 0) ch += 0.004;
+      if (s.wars.some((w) => w.defender === p.owner || w.attacker === p.owner)) ch += 0.002;
+      if (this.setts(p.id).some((x) => x.peak >= 800 && x.pop < x.peak * 0.75)) ch += 0.004;
+      if (rand() < ch) { this.startRevolt(p.id, null, choice(["가혹한 세금", "흉작과 굶주림", "영주의 폭정", "전쟁 징발", "이단 설교자의 선동"])); out.push(`[반란 발생] ${p.name}`); }
+    }
     return out;
   }
   transfer(pid, owner) {
     const s = this.state, prov = s.provinces[pid], old = prov.owner;
-    prov.owner = owner; delete prov.vacant_of;
+    prov.owner = owner; delete prov.vacant_of; delete prov.occ;
     const nc = this.C(owner);
     if (nc && nc.tier === "minor") {
       const n = Object.values(s.chars).filter((c) => c.tier === "semi").length;
@@ -742,6 +822,7 @@ ${c.thoughts.slice(-3).map((t) => `- (${t.date}) ${t.text}`).join("\n") || "- �
         this.C(heir).gold += Math.max(0, c.gold);
         this._event("상속", `${this.name(heir)}이(가) ${c.name}의 영지를 물려받았다.`, { public: true, kind: "succession", actors: [heir] });
         for (const w of s.wars) { if (w.attacker === id) w.attacker = heir; if (w.defender === id) w.defender = heir; }
+        for (const p of Object.values(s.provinces)) if (p.occ?.by === id) p.occ.by = heir;
       } else {
         holds.forEach((p) => { p.owner = null; p.vacant_of = id; });
         s.spawn_queue.push({ role: `${c.house}의 새 당주 — ${c.name}의 친척으로 영지를 물려받는다`, reason: "상속자 부재", heir_of: id });
@@ -870,6 +951,11 @@ ${s.chronicle.slice(-2).map((x) => `- (${x.date}) ${x.text}`).join("\n") || "없
           }
         }
       } else if (t === "found" && s.provinces[f.province]) this.foundSettlement(f.province, f.name, clamp(int(f.pop, 250), 120, 3000));
+      else if (t === "revolt" && s.provinces[f.province]) this.startRevolt(f.province, f.leader, f.cause);
+      else if (t === "suppress" && s.provinces[f.province]?.occ?.by === "rebels") {
+        const p = s.provinces[f.province]; delete p.occ;
+        this._event(`${p.name} 반란 종식`, str(f.cause || "반란이 끝났다.", 200), { public: true, kind: "war", actors: p.owner ? [p.owner] : [] });
+      }
     }
   }
   async spawn(reqs) {
@@ -892,6 +978,13 @@ ${s.chronicle.slice(-2).map((x) => `- (${x.date}) ${x.text}`).join("\n") || "없
         born_turn: s.turn, liege: prev ? s.king : null };
       s.chars[id] = c;
       if (s.chars[d.link_to]) c.opinions[d.link_to] = clamp(int(d.opinion_of_link), -100, 100);
+      if (req.take_province && s.provinces[req.take_province]) {
+        if (req.name) c.name = str(req.name, 40);
+        const old = s.provinces[req.take_province].owner;
+        c.title = `${s.provinces[req.take_province].name}의 반란 영주`; c.traits = [...new Set(["반역자", ...c.traits])].slice(0, 4);
+        this.transfer(req.take_province, id);
+        if (old) { c.opinions[old] = -60; if (s.chars[old]) s.chars[old].opinions[id] = -80; }
+      }
       if (prev) {
         for (const p of Object.values(s.provinces)) if (!p.owner && p.vacant_of === req.heir_of) { p.owner = id; delete p.vacant_of; }
         for (const o of Object.values(s.chars)) if (o.liege === req.heir_of) o.liege = id;
@@ -924,6 +1017,10 @@ ${s.chronicle.slice(-2).map((x) => `- (${x.date}) ${x.text}`).join("\n") || "없
       this.transfer(req.province, t);
       this._event("영지의 주인이 바뀌다", `${s.provinces[req.province].name}이(가) ${this.name(t)}의 손에 들어갔다.`, { public: true, kind: "god", actors: [t] });
       return done("영지가 넘어갔다.");
+    }
+    if (k === "revolt") {
+      const p = this.startRevolt(req.province, req.leader, req.text || "하늘의 뜻");
+      return done(p ? `${p.name}에서 반란이 일어났다.` : "그 영지에서는 반란을 일으킬 수 없다 (이미 점령 중이거나 주인이 없다).");
     }
     if (k === "spawn") { s.spawn_queue.push({ role: str(req.text || "새 인물", 300), reason: "신의 뜻" }); return done("다음 계절이 끝날 때 새 인물이 등장한다."); }
     if (k === "promote" && this.alive(t)) {

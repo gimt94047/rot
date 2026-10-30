@@ -125,6 +125,22 @@ function drawLand(g, f) {
   g.beginPath();
   for (let k = -H; k < W; k += 9) { g.moveTo(k, 0); g.lineTo(k + H, H); }
   g.stroke();
+  // 점령: 점령 세력 색 빗금
+  for (const p of Object.values(S.provinces)) {
+    if (!p.occ) continue;
+    const color = p.occ.by === "rebels" ? REBEL_COLOR : S.chars[p.occ.by]?.color || "#444";
+    g.save();
+    g.beginPath();
+    for (const i of MAP.cellsByCounty[p.idx]) g.rect((i % w) * CELL, ((i / w) | 0) * CELL, CELL + 0.6, CELL + 0.6);
+    g.clip();
+    const xs = MAP.cellsByCounty[p.idx].map((i) => i % w), ys = MAP.cellsByCounty[p.idx].map((i) => (i / w) | 0);
+    const x0 = Math.min(...xs) * CELL, x1 = (Math.max(...xs) + 1) * CELL, y0 = Math.min(...ys) * CELL, y1 = (Math.max(...ys) + 1) * CELL;
+    g.strokeStyle = color; g.globalAlpha = 0.9; g.lineWidth = CELL * 0.85;
+    g.beginPath();
+    for (let k = x0 - (y1 - y0); k < x1; k += CELL * 2.4) { g.moveTo(k, y1); g.lineTo(k + (y1 - y0), y0); }
+    g.stroke();
+    g.restore();
+  }
   const ownerOf = (i) => (grid[i] < 0 ? null : owners[grid[i]]);
   const reg = MAP.region, lw = 1 / Math.sqrt(view.z);
   const seg = (style, width, test) => {
@@ -276,7 +292,8 @@ function drawSeal(g, x, y, r) {
 }
 function renderLegend() {
   const owners = [...new Set(Object.values(S.provinces).map((p) => p.owner).filter(Boolean))];
-  const html = owners.map((o) => `<span><i style="background:${S.chars[o].color}"></i>${esc(S.chars[o].name)}</span>`).join("");
+  let html = owners.map((o) => `<span><i style="background:${S.chars[o].color}"></i>${esc(S.chars[o].name)}</span>`).join("");
+  if (Object.values(S.provinces).some((p) => p.occ?.by === "rebels")) html += `<span><i class="rebel"></i>반란군</span>`;
   if ($("#legend").innerHTML !== html) $("#legend").innerHTML = html;
 }
 function cellAtXY(cx, cy) {
@@ -291,7 +308,7 @@ function showTip(ev) {
   const [lx, ly] = local(ev), id = cellAtXY(lx, ly), tip = $("#tip");
   if (!id) { tip.hidden = true; return; }
   const p = S.provinces[id], st = settlementsIn(id);
-  tip.innerHTML = `<b>${esc(p.name)}</b> <span style="color:var(--muted)">${esc(MAP.regions[p.region].name)}주</span><br>${esc(nm(p.owner))}<br>${st.length ? st.map((s) => `${esc(s.name)} ${tierOf(s.pop).name}`).join(", ") : "정착지 없음"}`;
+  tip.innerHTML = `<b>${esc(p.name)}</b> <span style="color:var(--muted)">${esc(MAP.regions[p.region].name)}주</span><br>${esc(nm(p.owner))}${p.occ ? ` <span style="color:#e3a08f">(${p.occ.by === "rebels" ? "반란군" : esc(nm(p.occ.by))} 점령)</span>` : ""}<br>${st.length ? st.map((s) => `${esc(s.name)} ${tierOf(s.pop).name}`).join(", ") : "정착지 없음"}`;
   tip.hidden = false;
   tip.style.left = Math.min(lx + 14, $("#mapwrap").clientWidth - 200) + "px";
   tip.style.top = ly + 14 + "px";
@@ -339,6 +356,7 @@ function onUp(ev) {
   if (!ptrs.size) gesture = null;
   else if (gesture?.type === "pinch") gesture = { type: "none" };
 }
+const REBEL_COLOR = "#161210";
 const TIER_GLYPH = { village: "●", town: "□", city: "▣", metropolis: "◉" };
 function renderPcard() {
   const p = S.provinces[sel.prov], card = $("#pcard");
@@ -353,6 +371,7 @@ function renderPcard() {
       ${p.owner ? `<button class="linkish" data-person="${p.owner}">${esc(nm(p.owner))}</button>` : "<span>공석</span>"}
       <span>개발 ${p.dev}</span><span>${esc(p.terrain)}</span><span>인구 ${pop.toLocaleString()}</span>
       ${war ? `<span class="war">${esc(nm(war.attacker))}의 침공, 전황 ${war.score > 0 ? "+" : ""}${war.score}</span>` : ""}
+      ${p.occ ? `<span class="war">${p.occ.by === "rebels" ? `반란군 점령 (${esc(p.occ.leader)}, ${S.turn - p.occ.since + 1}계절째)` : `${esc(nm(p.occ.by))} 점령 중`}</span>` : ""}
     </div>
     <div class="chips">${st.map((s) => { const t = tierOf(s.pop);
       return `<span class="chip t-${t.key}"><i>${TIER_GLYPH[t.key]}</i>${esc(s.name)} <em>${t.name} ${s.pop.toLocaleString()}</em></span>`; }).join("") || '<span class="empty">정착지 없음</span>'}</div>`;
@@ -461,6 +480,10 @@ function renderGod() {
       <div class="acts"><button class="ghost" data-g="spawn">인물 보내기</button></div></section>
     <section><h4>영지 하사</h4><div class="row2"><select id="g-gp">${popt}</select><select id="g-gt">${copt}</select></div>
       <div class="acts"><button class="ghost" data-g="give">영지 넘기기</button></div></section>
+    <section><h4>반란</h4><p class="hint">고른 영지에서 반란을 일으킵니다. 영주가 진압하지 못하면 반란 지도자가 새 영주가 됩니다.</p>
+      <div class="row2"><select id="g-rp">${popt}</select><input id="g-rl" type="text" placeholder="지도자 이름 (비우면 아무나)"></div>
+      <input id="g-rc" type="text" placeholder="원인 (예: 가혹한 세금)">
+      <div class="acts"><button class="ghost" data-g="revolt">반란 일으키기</button></div></section>
     <section><h4>축복과 벼락</h4><div class="row2"><select id="g-bt">${copt}</select><input id="g-bg" type="number" value="300" step="50"></div>
       <div class="acts"><button class="ghost" data-g="bless">금화 내리기</button><button class="ghost danger" data-g="smite">벼락 내리기</button></div></section>
     <section><h4>배역 바꾸기</h4><p class="hint">인물의 등급과 그를 연기하는 모델을 바꿉니다.</p>
@@ -488,6 +511,7 @@ async function god(kind) {
   if (kind === "give") { body.province = v("g-gp"); body.target = v("g-gt"); }
   if (kind === "bless") { body.target = v("g-bt"); body.gold = +v("g-bg") || 0; }
   if (kind === "smite") { body.target = v("g-bt"); if (!confirm(`${nm(body.target)}에게 벼락을 내립니까?`)) return; body.text = "하늘의 벼락"; }
+  if (kind === "revolt") { body.province = v("g-rp"); body.leader = v("g-rl").trim(); body.text = v("g-rc").trim(); }
   if (kind === "promote") { body.target = v("g-rt"); body.tier = v("g-rtier"); body.model = v("g-rm"); }
   toast(G.god(body));
   ["g-decree", "g-whisper", "g-spawn"].forEach((id) => { if (kind !== "give") document.getElementById(id).value = ""; });

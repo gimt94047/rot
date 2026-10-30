@@ -198,7 +198,7 @@ function renderMap() {
     g.stroke();
   }
   const fs = Math.max(10, Math.min(15, 13 * Math.sqrt(f.s * CELL / 8))) * Math.min(1.35, Math.sqrt(view.z));
-  const boxes = [];
+  const boxes = [], drawn = new Set(); // 주 이름과 주도 이름이 같으면 한 번만
   const free = (b) => !boxes.some((o) => b.x < o.x + o.w && b.x + b.w > o.x && b.y < o.y + o.h && b.y + b.h > o.y);
   const label = (text, x, y, size, { weight = 400, color = "#f3ead6", alpha = 1, spacing = 0, force = false } = {}) => {
     g.font = `${weight} ${size}px "Song Myung", "Nanum Myeongjo", serif`;
@@ -240,13 +240,14 @@ function renderMap() {
   // 이름: 큰 도시 → 주 이름 → 소도시 → 마을 순으로, 겹치면 뺀다
   const nameOf = (s) => {
     const t = tierOf(s.pop).key, st = TIER_STYLE[t], [x, y] = P(s.x, s.y);
-    if (view.z < st.show) return;
-    label(s.name, x, y + st.r * mk + fs * st.font * 0.75, fs * st.font, { weight: st.weight });
+    if (view.z < st.show || drawn.has(s.name)) return;
+    if (label(s.name, x, y + st.r * mk + fs * st.font * 0.75, fs * st.font, { weight: st.weight })) drawn.add(s.name);
   };
   setts.filter((s) => s.pop >= 5000).forEach(nameOf);
   for (const r of Object.values(MAP.regions)) {
     const [x, y] = P(r.cx, r.cy);
-    label(r.name, x, y, fs * 1.08, { color: "#f5e7c0", alpha: view.z > 2.2 ? 0.45 : 0.72, spacing: 2 });
+    if (drawn.has(r.name)) continue;
+    if (label(r.name, x, y, fs * 1.08, { color: "#f5e7c0", alpha: view.z > 2.2 ? 0.45 : 0.72, spacing: 2 })) drawn.add(r.name);
   }
   setts.filter((s) => s.pop < 5000).forEach(nameOf);
   // 전쟁 표시
@@ -338,19 +339,23 @@ function onUp(ev) {
   if (!ptrs.size) gesture = null;
   else if (gesture?.type === "pinch") gesture = { type: "none" };
 }
+const TIER_GLYPH = { village: "●", town: "□", city: "▣", metropolis: "◉" };
 function renderPcard() {
   const p = S.provinces[sel.prov], card = $("#pcard");
   if (!p) { card.hidden = true; return; }
   const war = S.wars.find((w) => w.province === p.id), st = settlementsIn(p.id);
   const pop = st.reduce((a, s) => a + s.pop, 0);
-  card.innerHTML = `<button class="x" aria-label="닫기">×</button>
-    <h3>${esc(p.name)}</h3>
-    <div class="region">${esc(MAP.regions[p.region].name)}주${p.capital ? ", 왕도" : p.seat ? ", 주도" : ""}</div>
-    <dl><dt>영주</dt><dd>${p.owner ? `<button class="linkish" data-person="${p.owner}">${esc(nm(p.owner))}</button>` : "공석"}</dd>
-    <dt>개발도</dt><dd>${p.dev}, ${esc(p.terrain)}</dd>
-    <dt>인구</dt><dd>${pop.toLocaleString()}명</dd>
-    ${war ? `<dt>전쟁</dt><dd>${esc(nm(war.attacker))}의 침공 (전황 ${war.score > 0 ? "+" : ""}${war.score})</dd>` : ""}</dl>
-    <ul class="setts">${st.map((s) => `<li><span>${esc(s.name)}</span><span>${tierOf(s.pop).name}</span><span>${s.pop.toLocaleString()}</span></li>`).join("") || "<li>정착지 없음</li>"}</ul>`;
+  const place = `${MAP.regions[p.region].name}주${p.capital ? ", 왕도" : p.seat ? ", 주도" : ""}`;
+  card.innerHTML = `<div class="ph">
+      <h3>${esc(p.name)}</h3><span class="region">${esc(place)}</span>
+      <button class="x" aria-label="닫기">×</button></div>
+    <div class="meta">
+      ${p.owner ? `<button class="linkish" data-person="${p.owner}">${esc(nm(p.owner))}</button>` : "<span>공석</span>"}
+      <span>개발 ${p.dev}</span><span>${esc(p.terrain)}</span><span>인구 ${pop.toLocaleString()}</span>
+      ${war ? `<span class="war">${esc(nm(war.attacker))}의 침공, 전황 ${war.score > 0 ? "+" : ""}${war.score}</span>` : ""}
+    </div>
+    <div class="chips">${st.map((s) => { const t = tierOf(s.pop);
+      return `<span class="chip t-${t.key}"><i>${TIER_GLYPH[t.key]}</i>${esc(s.name)} <em>${t.name} ${s.pop.toLocaleString()}</em></span>`; }).join("") || '<span class="empty">정착지 없음</span>'}</div>`;
   card.hidden = false;
   $(".x", card).onclick = () => { sel.prov = null; card.hidden = true; renderMap(); };
   $$("[data-person]", card).forEach((b) => (b.onclick = () => openPerson(b.dataset.person)));

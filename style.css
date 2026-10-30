@@ -249,3 +249,26 @@ dialog.settings::backdrop { background: rgba(8, 6, 4, .7); }
 .evlist li.k-grow .t { color: #a9c48a; }
 .evlist li.k-decline .t, .evlist li.k-ruin .t { color: #c9a07a; }
 @media (max-width: 900px) { .pcard { max-height: 72%; overflow-y: auto; padding: 12px 14px; } .pcard h3 { font-size: 19px; } }
+
+/* 영지 정보: 지도를 가리지 않는 띠 (폰에선 지도 바로 아래, 넓은 화면에선 오른쪽 위) */
+.pcard, .pcard[hidden] { position: static; width: auto; max-height: none; border: 0; border-radius: 0; }
+.pcard[hidden] { display: none; }
+.pcard {
+  padding: 10px 16px 12px; background: var(--walnut-2); border-bottom: 1px solid var(--line);
+  font-size: 14px; animation: slidein .18s ease-out;
+}
+@keyframes slidein { from { opacity: 0; transform: translateY(-4px); } }
+@media (prefers-reduced-motion: reduce) { .pcard { animation: none; } }
+.pcard .ph { display: flex; align-items: baseline; gap: 10px; }
+.pcard .ph h3 { font: 400 20px/1.2 var(--display); margin: 0; }
+.pcard .ph .region { color: var(--bone-dim); font-size: 13px; margin: 0; }
+.pcard .x { position: static; margin-left: auto; background: none; border: 0; color: var(--muted); font-size: 22px; line-height: 1; padding: 0 2px; }
+.pcard .meta { display: flex; flex-wrap: wrap; gap: 2px 14px; margin-top: 4px; color: var(--bone-dim); }
+.pcard .meta .linkish { color: var(--bone); }
+.pcard .meta .war { color: #e3a08f; }
+.pcard .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.pcard .chip { display: inline-flex; align-items: baseline; gap: 5px; border: 1px solid var(--line); border-radius: 12px; padding: 1px 10px; font-size: 13px; }
+.pcard .chip i { font-style: normal; color: var(--bone-dim); }
+.pcard .chip em { font-style: normal; color: var(--muted); font-size: 12px; }
+.pcard .chip.t-metropolis i { color: var(--gilt); }
+@media (max-width: 900px) { .pcard { left: auto; right: auto; top: auto; bottom: auto; max-height: none; padding: 10px 16px 12px; } .pcard h3 { font-size: 20px; } }

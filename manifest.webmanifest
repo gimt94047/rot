@@ -1,0 +1,17 @@
+{
+  "name": "로트발트의 왕관",
+  "short_name": "로트발트",
+  "description": "여러 AI가 중세 왕국의 인물을 연기하는 정치 시뮬레이션",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#1c2420",
+  "theme_color": "#231d17",
+  "lang": "ko",
+  "icons": [
+    {"src": "icon-192.png", "sizes": "192x192", "type": "image/png"},
+    {"src": "icon-512.png", "sizes": "512x512", "type": "image/png"},
+    {"src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable"}
+  ]
+}

@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#231d17">
+<title>로트발트의 왕관</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-192.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Nanum+Myeongjo:wght@400;700;800&family=Song+Myung&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="bar">
+  <div class="brand">
+    <h1>로트발트의 왕관</h1>
+    <div class="date" id="date">—</div>
+  </div>
+  <div class="reign" id="reign"></div>
+  <div class="controls">
+    <span class="phase" id="phase" aria-live="polite"></span>
+    <button id="btnTurn" class="primary">다음 계절</button>
+    <label class="auto"><input type="checkbox" id="auto"> 자동 진행</label>
+    <button id="btnSettings" class="iconbtn" aria-label="설정">설정</button>
+  </div>
+  <div class="spend" id="spend"></div>
+</header>
+
+<main class="layout">
+  <section class="mapwrap" id="mapwrap">
+    <canvas id="map" aria-label="왕국 지도"></canvas>
+    <div class="tip" id="tip" hidden></div>
+    <aside class="pcard" id="pcard" hidden></aside>
+    <div class="legend" id="legend"></div>
+  </section>
+
+  <section class="side">
+    <nav class="tabs" role="tablist">
+      <button role="tab" data-tab="chron" class="on">연대기</button>
+      <button role="tab" data-tab="events">사건</button>
+      <button role="tab" data-tab="people">인물</button>
+      <button role="tab" data-tab="god">신의 권능</button>
+    </nav>
+    <div class="pane" id="pane-chron"></div>
+    <div class="pane" id="pane-events" hidden>
+      <div class="filters" id="evfilters">
+        <button data-f="all" class="on">전체</button>
+        <button data-f="public">공개된 일</button>
+        <button data-f="secret">비밀</button>
+        <button data-f="war">전쟁</button>
+      </div>
+      <ol class="evlist" id="evlist"></ol>
+    </div>
+    <div class="pane" id="pane-people" hidden></div>
+    <div class="pane" id="pane-god" hidden></div>
+  </section>
+</main>
+
+<dialog class="settings" id="settings">
+  <form method="dialog" id="sform">
+    <h2>설정</h2>
+    <p class="hint">키는 이 폰의 브라우저 저장소에만 들어가고, Anthropic·OpenAI 서버로만 전송됩니다. 비워 둔 쪽은 모의 응답으로 돌아갑니다.</p>
+    <label for="k-anthropic">Anthropic API 키</label>
+    <input type="password" id="k-anthropic" autocomplete="off" placeholder="sk-ant-…">
+    <label for="k-openai">OpenAI API 키</label>
+    <input type="password" id="k-openai" autocomplete="off" placeholder="sk-…">
+
+    <h3>배역별 모델</h3>
+    <p class="hint">모델 ID가 바뀌면 여기서 고치면 됩니다. 추론 강도는 GPT 모델에만 적용됩니다.</p>
+    <div id="mrows"></div>
+
+    <h3>월 예산 (달러)</h3>
+    <div class="two">
+      <div><label for="b-anthropic">Claude</label><input type="number" id="b-anthropic" min="1"></div>
+      <div><label for="b-openai">GPT</label><input type="number" id="b-openai" min="1"></div>
+    </div>
+
+    <h3>세계</h3>
+    <p class="hint">저장 파일로 내보내 두면 폰을 바꾸거나 브라우저 데이터를 지워도 이어서 할 수 있습니다.</p>
+    <div class="foot" style="margin-top:6px">
+      <button type="button" class="ghost" id="s-export">세계 내보내기</button>
+      <button type="button" class="ghost" id="s-import">세계 불러오기</button>
+      <input type="file" id="s-file" accept="application/json,.json" hidden>
+    </div>
+
+    <div class="foot">
+      <button type="button" class="ghost" id="s-cancel">닫기</button>
+      <button type="submit" class="primary" id="s-save">저장</button>
+    </div>
+  </form>
+</dialog>
+
+<div class="toast" id="toast" role="status" hidden></div>
+<script src="data.js"></script>
+<script src="engine.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
